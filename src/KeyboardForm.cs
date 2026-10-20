@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -99,6 +99,12 @@ namespace MathKeyboard
             repeatTimer.Tick += delegate
             {
                 repeatTimer.Interval = 45;
+                if (down != null)
+                {
+                    repeating = true;
+                    Press(down);
+                    repeating = false;
+                }
             };
 
             lastTime = clock.Elapsed.TotalSeconds;
@@ -336,6 +342,33 @@ namespace MathKeyboard
         }
 
         Rectangle MinRect { get { return new Rectangle(ClientSize.Width - TitleH * 3, 0, TitleH * 3 / 2, TitleH); } }
+        Rectangle SndRect { get { return new Rectangle(MinRect.Left - TitleH * 3 / 2, 0, TitleH * 3 / 2, TitleH); } }
+
+        static string SettingsPath
+        {
+            get
+            {
+                return System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathKeyboard", "settings.txt");
+            }
+        }
+
+        public static void LoadSettings()
+        {
+            try { Audio.Muted = System.IO.File.Exists(SettingsPath) && System.IO.File.ReadAllText(SettingsPath).Contains("muted=1"); }
+            catch { }
+        }
+
+        static void SaveSettings()
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath));
+                System.IO.File.WriteAllText(SettingsPath, Audio.Muted ? "muted=1" : "muted=0");
+            }
+            catch { }
+        }
+
         Rectangle CloseRect { get { return new Rectangle(ClientSize.Width - TitleH * 3 / 2, 0, TitleH * 3 / 2, TitleH); } }
 
         Key HitTest(Point p)
@@ -371,20 +404,40 @@ namespace MathKeyboard
             Build();
         }
 
+        int lastVariant;
+        bool repeating;
+        int upKind;   // 0 none, 1 normal key, 2 big key: which release sound to play on mouse up
+
+        // Picks one of the pitch variants, never the same twice in a row.
+        int Variant()
+        {
+            int i;
+            do { i = rng.Next(Sfx.Down.Length); } while (i == lastVariant);
+            lastVariant = i;
+            return i;
+        }
+
+        void PlayDown(bool big)
+        {
+            Audio.Play((big ? Sfx.BigDown : Sfx.Down)[Variant()], repeating ? 0.5f : 1f);
+            if (!repeating) upKind = big ? 2 : 1;
+        }
+
         void Press(Key k)
         {
             switch (k.Act)
             {
-                case Act.Text: Native.SendText(Typed(k)); break;
-                case Act.Back: Native.SendVk(0x08, false); break;
-                case Act.Enter: Native.SendVk(0x0D, false); break;
-                case Act.Space: Native.SendVk(0x20, false); break;
-                case Act.Left: Native.SendVk(0x25, true); break;
-                case Act.Right: Native.SendVk(0x27, true); break;
-                case Act.Shift: shift = !shift; break;
-                case Act.Italic: italicOn = !italicOn; break;
+                case Act.Text: Native.SendText(Typed(k)); PlayDown(false); break;
+                case Act.Back: Native.SendVk(0x08, false); PlayDown(true); break;
+                case Act.Enter: Native.SendVk(0x0D, false); PlayDown(true); break;
+                case Act.Space: Native.SendVk(0x20, false); PlayDown(true); break;
+                case Act.Left: Native.SendVk(0x25, true); PlayDown(false); break;
+                case Act.Right: Native.SendVk(0x27, true); PlayDown(false); break;
+                case Act.Shift: shift = !shift; PlayDown(false); break;
+                case Act.Italic: italicOn = !italicOn; PlayDown(false); break;
                 case Act.Tab:
                     down = null;
+                    PlayDown(false);
                     SetPage(k.Page);
                     break;
             }
@@ -397,11 +450,20 @@ namespace MathKeyboard
 
             if (CloseRect.Contains(e.Location)) { Close(); return; }
             if (MinRect.Contains(e.Location)) { WindowState = FormWindowState.Minimized; return; }
+            if (SndRect.Contains(e.Location))
+            {
+                Audio.Muted = !Audio.Muted;
+                SaveSettings();
+                if (!Audio.Muted) Audio.Play(Sfx.Down[2], 0.8f);
+                dirty = true;
+                return;
+            }
 
             Key k = HitTest(e.Location);
             if (k == null) return;
             down = k;
             dirty = true;
+            upKind = 0;
             Press(k);
             if (down != null && k.Repeat)
             {
@@ -416,13 +478,18 @@ namespace MathKeyboard
             repeatTimer.Stop();
             down = null;
             dirty = true;
+            if (upKind != 0)
+            {
+                Audio.Play((upKind == 2 ? Sfx.BigUp : Sfx.Up)[Variant()], 0.8f);
+                upKind = 0;
+            }
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
             Key h = HitTest(e.Location);
-            int t = CloseRect.Contains(e.Location) ? 2 : MinRect.Contains(e.Location) ? 1 : 0;
+            int t = CloseRect.Contains(e.Location) ? 2 : MinRect.Contains(e.Location) ? 1 : SndRect.Contains(e.Location) ? 3 : 0;
             if (h != hover || t != hoverTitle) dirty = true;
             hover = h;
             hoverTitle = t;
@@ -447,7 +514,7 @@ namespace MathKeyboard
                 Point p = PointToClient(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
                 int grip = (int)(18 * scale);
                 if (p.X >= ClientSize.Width - grip && p.Y >= ClientSize.Height - grip) { m.Result = (IntPtr)17; return; }
-                if (p.Y >= 0 && p.Y < TitleH && p.X < MinRect.Left) { m.Result = (IntPtr)2; return; }
+                if (p.Y >= 0 && p.Y < TitleH && p.X < SndRect.Left) { m.Result = (IntPtr)2; return; }
                 m.Result = (IntPtr)1;
                 return;
             }
@@ -775,6 +842,12 @@ namespace MathKeyboard
                 using (Brush b = new SolidBrush(A(70, 255, 255, 255))) g.FillPath(b, p);
             if (hoverTitle == 2) using (GraphicsPath p = RoundRect(Rectangle.Inflate(CloseRect, -3, -4), 7 * scale))
                 using (Brush b = new SolidBrush(A(215, 215, 50, 30))) g.FillPath(b, p);
+            if (hoverTitle == 3) using (GraphicsPath p = RoundRect(Rectangle.Inflate(SndRect, -3, -4), 7 * scale))
+                using (Brush b = new SolidBrush(A(70, 255, 255, 255))) g.FillPath(b, p);
+            DrawText(g, "♪", SymbolFont, (int)(14 * scale), SndRect, A(Audio.Muted ? 90 : 225, 235, 230, 225), sfCenter);
+            if (Audio.Muted)
+                using (Pen pen = new Pen(A(210, 235, 120, 90), Math.Max(1.5f, 1.6f * scale)))
+                    g.DrawLine(pen, SndRect.Left + SndRect.Width * 0.3f, TitleH * 0.72f, SndRect.Right - SndRect.Width * 0.3f, TitleH * 0.28f);
             DrawText(g, "—", UiFont, (int)(13 * scale), MinRect, A(225, 235, 230, 225), sfCenter);
             DrawText(g, "✕", SymbolFont, (int)(12 * scale), CloseRect, A(225, 235, 230, 225), sfCenter);
             using (Pen pen = new Pen(A(26, 255, 255, 255)))
@@ -918,6 +991,18 @@ namespace MathKeyboard
                 return;
             }
 
+            // --sounds <wav>  : write a preview of all sound effects, play them once, log mixer health
+            if (args.Length >= 2 && args[0] == "--sounds")
+            {
+                Audio.WritePreview(args[1]);
+                Audio.Init();
+                for (int i = 0; i < 8; i++) { Audio.Play(Sfx.Down[i % 6], 1f); System.Threading.Thread.Sleep(70); Audio.Play(Sfx.Up[i % 6], 0.8f); System.Threading.Thread.Sleep(90); }
+                Audio.Play(Sfx.BigDown[2], 1f); System.Threading.Thread.Sleep(900);
+                System.IO.File.WriteAllText(args[1] + ".log",
+                    "ready=" + Audio.Ready + " chunks=" + Audio.Chunks + " writeErrors=" + Audio.WriteErrors);
+                return;
+            }
+
             // --send <text> <delayMs>  : type text into the focused app after a delay (SendInput self-test)
             if (args.Length >= 2 && args[0] == "--send")
             {
@@ -926,6 +1011,8 @@ namespace MathKeyboard
                 return;
             }
 
+            KeyboardForm.LoadSettings();
+            Audio.Init();
             Application.Run(new KeyboardForm());
         }
     }
