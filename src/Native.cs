@@ -111,6 +111,34 @@ namespace MathKeyboard
             SendInput(2, a, Marshal.SizeOf(typeof(INPUT)));
         }
 
+        // Presses modifier+key together (used for Alt+= which starts an equation in Office).
+        public static void SendCombo(ushort modifier, ushort vk)
+        {
+            INPUT[] a = { Make(modifier, 0, 0), Make(vk, 0, 0), Make(vk, 0, KEYEVENTF_KEYUP), Make(modifier, 0, KEYEVENTF_KEYUP) };
+            SendInput(4, a, Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+
+        // Name of the process that owns the window the user is typing into (e.g. "WINWORD").
+        public static string ForegroundProcessName()
+        {
+            try
+            {
+                uint pid;
+                GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+                return System.Diagnostics.Process.GetProcessById((int)pid).ProcessName.ToUpperInvariant();
+            }
+            catch { return ""; }
+        }
+
+        public static bool ForegroundIsOffice()
+        {
+            string n = ForegroundProcessName();
+            return n == "WINWORD" || n == "POWERPNT" || n == "ONENOTE" || n == "ONENOTEM";
+        }
+
         // ---- translucent backdrop blur (Windows 10 accent policy) ----
 
         [StructLayout(LayoutKind.Sequential)]

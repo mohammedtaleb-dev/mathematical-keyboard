@@ -54,6 +54,7 @@ namespace MathKeyboard
         int page;
         bool shift;
         bool italicOn = true;
+        bool eqMode;
         Key hover, down;
         int hoverTitle;   // 1 = minimize, 2 = close
         float scale = 1f;
@@ -300,15 +301,16 @@ namespace MathKeyboard
                 keys.Add(items[i]);
             }
 
-            keys.Add(new Key { Label = char.ConvertFromUtf32(0x1D465) + " Italic", Act = Act.Italic, X = 0, Y = 5, W = 2 });
+            keys.Add(new Key { Label = char.ConvertFromUtf32(0x1D465) + " Italic", Act = Act.Italic, X = 0, Y = 5, W = 1.7f });
+            keys.Add(new Key { Label = "∑ Equation", Act = Act.Eq, X = 1.7f, Y = 5, W = 1.7f });
             if (page == GreekPage)
             {
-                keys.Add(new Key { Label = "⇧ Shift", Act = Act.Shift, X = 2, Y = 5, W = 2 });
-                keys.Add(new Key { Label = "Space", Act = Act.Space, X = 4, Y = 5, W = 3, Repeat = true });
+                keys.Add(new Key { Label = "⇧ Shift", Act = Act.Shift, X = 3.4f, Y = 5, W = 1.7f });
+                keys.Add(new Key { Label = "Space", Act = Act.Space, X = 5.1f, Y = 5, W = 1.9f, Repeat = true });
             }
             else
             {
-                keys.Add(new Key { Label = "Space", Act = Act.Space, X = 2, Y = 5, W = 5, Repeat = true });
+                keys.Add(new Key { Label = "Space", Act = Act.Space, X = 3.4f, Y = 5, W = 3.6f, Repeat = true });
             }
             keys.Add(new Key { Label = "←", Act = Act.Left, X = 7, Y = 5, W = 1.5f, Repeat = true });
             keys.Add(new Key { Label = "→", Act = Act.Right, X = 8.5f, Y = 5, W = 1.5f, Repeat = true });
@@ -387,10 +389,14 @@ namespace MathKeyboard
             return k.Label;
         }
 
+        // In Equation mode the structured keys type the Word/PowerPoint/OneNote linear format
+        // (e.g. "lim_(x→0) "), which those apps turn into a real typeset equation. Plain letters are
+        // typed as plain letters there because the equation editor italicises them itself.
         string Typed(Key k)
         {
+            if (eqMode && k.Eq != null) return k.Eq;
             if (k.Greek && shift) return k.Out.ToUpperInvariant();
-            if (italicOn && k.Math) return MathText.Italic(k.Out);
+            if (italicOn && k.Math && !eqMode) return MathText.Italic(k.Out);
             return k.Out;
         }
 
@@ -435,6 +441,12 @@ namespace MathKeyboard
                 case Act.Right: Native.SendVk(0x27, true); PlayDown(false); break;
                 case Act.Shift: shift = !shift; PlayDown(false); break;
                 case Act.Italic: italicOn = !italicOn; PlayDown(false); break;
+                case Act.Eq:
+                    eqMode = !eqMode;
+                    // inside Word / PowerPoint / OneNote, turning Equation mode on also starts an equation (Alt+=)
+                    if (eqMode && Native.ForegroundIsOffice()) Native.SendCombo(0x12, 0xBB);
+                    PlayDown(false);
+                    break;
                 case Act.Tab:
                     down = null;
                     PlayDown(false);
@@ -864,7 +876,7 @@ namespace MathKeyboard
                 r.X += (int)AnimOffset(k, ux, out e);
 
                 int state = 0;
-                if ((k.Act == Act.Shift && shift) || (k.Act == Act.Italic && italicOn)) state = 3;
+                if ((k.Act == Act.Shift && shift) || (k.Act == Act.Italic && italicOn) || (k.Act == Act.Eq && eqMode)) state = 3;
                 else if (k == down) state = 2;
                 else if (k == hover) state = 1;
                 GlassKey(g, r, e, state);
