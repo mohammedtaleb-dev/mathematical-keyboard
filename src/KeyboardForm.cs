@@ -4,38 +4,35 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.IO;
-using System.Runtime.InteropServices;
+using System.Drawing.Text;
 using System.Windows.Forms;
 
 namespace MathKeyboard
 {
     class KeyboardForm : Form
     {
-        const int WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOPMOST = 0x00000008;
+        const int WS_EX_LAYERED = 0x00080000, WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOPMOST = 0x00000008;
 
-        static readonly Color BgColor = Color.FromArgb(0x1A, 0x16, 0x15);
-        static readonly Color TitleColor = Color.FromArgb(0x12, 0x0E, 0x0D);
-        static readonly Color KeyColor = Color.FromArgb(0x35, 0x30, 0x2F);
-        static readonly Color HoverColor = Color.FromArgb(0x52, 0x40, 0x38);
-        static readonly Color PressColor = Color.FromArgb(0xE0, 0x62, 0x1E);
-        static readonly Color AccentA = Color.FromArgb(0xE8, 0x6A, 0x17);
-        static readonly Color AccentB = Color.FromArgb(0xB8, 0x2A, 0x10);
-        static readonly Color TextColor = Color.FromArgb(0xF4, 0xEE, 0xEA);
+        static readonly Color AccentA = Color.FromArgb(0xF0, 0x70, 0x1A);
+        static readonly Color AccentB = Color.FromArgb(0xC0, 0x2C, 0x10);
+        static readonly Color TextColor = Color.FromArgb(0xFA, 0xF4, 0xEF);
 
         const string MathFont = "Cambria Math";
         const string UiFont = "Segoe UI";
+        const string SymbolFont = "Segoe UI Symbol";
+        const string SymbolChars = "⌫↵⇧✕⇌⇄⇀↑↓";
         const float NumpadX = 10.4f;
         const float TotalW = 14.4f;
         const int Rows = 6;
         const int Cols = 10;
         const int PerPage = 40;
+        const int GreekPage = 2;
         const float AnimDur = 0.55f;
 
         readonly string[] tabNames =
         {
-            "∫  Calculus", "∑  Algebra", "π  Greek",
-            "sin  Trig", "≤  Logic", "x²  Powers"
+            "∫ Calculus", "∑ Algebra", "π Greek", "sin Trig",
+            "≤ Logic", "x² Powers", "ℏ Physics", "H₂O Chem"
         };
 
         readonly List<Key[]> pages = new List<Key[]>();
@@ -48,12 +45,15 @@ namespace MathKeyboard
         readonly Random rng = new Random();
         readonly Stopwatch clock = Stopwatch.StartNew();
         readonly Bitmap titleLogo;
+        readonly StringFormat sfCenter, sfLeft;
 
+        Native.Surface surface;
         Bitmap cache;
         bool dirty = true;
 
         int page;
         bool shift;
+        bool italicOn = true;
         Key hover, down;
         int hoverTitle;   // 1 = minimize, 2 = close
         float scale = 1f;
@@ -76,12 +76,17 @@ namespace MathKeyboard
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = true;
-            DoubleBuffered = true;
-            BackColor = BgColor;
             ClientSize = new Size((int)(860 * scale), (int)(290 * scale));
             MinimumSize = new Size((int)(600 * scale), (int)(220 * scale));
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Bottom - Height - (int)(16 * scale));
+
+            sfCenter = new StringFormat(StringFormat.GenericTypographic);
+            sfCenter.Alignment = StringAlignment.Center;
+            sfCenter.LineAlignment = StringAlignment.Center;
+            sfCenter.FormatFlags |= StringFormatFlags.NoWrap;
+            sfLeft = new StringFormat(sfCenter);
+            sfLeft.Alignment = StringAlignment.Near;
 
             using (Bitmap small = Logo.Render(32))
                 Icon = Icon.FromHandle(small.GetHicon());
@@ -94,7 +99,6 @@ namespace MathKeyboard
             repeatTimer.Tick += delegate
             {
                 repeatTimer.Interval = 45;
-                if (down != null) Press(down);
             };
 
             lastTime = clock.Elapsed.TotalSeconds;
@@ -110,22 +114,66 @@ namespace MathKeyboard
             get
             {
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= WS_EX_NOACTIVATE | WS_EX_TOPMOST;
+                cp.ExStyle |= WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
                 return cp;
             }
         }
 
-        // ---------- symbol pages ----------
-
-        static void S(List<Key> l, string chars)
+        protected override void OnHandleCreated(EventArgs e)
         {
-            foreach (char c in chars)
-                if (c != ' ') l.Add(new Key { Label = c.ToString(), Out = c.ToString() });
+            base.OnHandleCreated(e);
+            Native.EnableBlur(Handle);
         }
 
-        static void T(List<Key> l, string label, string output)
+        protected override void OnShown(EventArgs e)
         {
-            l.Add(new Key { Label = label, Out = output });
+            base.OnShown(e);
+            ApplyRegion();
+            dirty = true;
+            Present();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (titleLogo == null || !IsHandleCreated || WindowState == FormWindowState.Minimized) return;
+            ApplyRegion();
+            dirty = true;
+            Present();
+        }
+
+        protected override void OnPaint(PaintEventArgs e) { }
+        protected override void OnPaintBackground(PaintEventArgs e) { }
+
+        void ApplyRegion()
+        {
+            using (GraphicsPath p = RoundRect(new RectangleF(0, 0, ClientSize.Width, ClientSize.Height), Radius))
+                Region = new Region(p);
+        }
+
+        float Radius { get { return 18 * scale; } }
+
+        // ---------- symbol pages ----------
+
+        static void S(List<Key> l, string chars, bool math)
+        {
+            foreach (char c in chars)
+                if (c != ' ') l.Add(new Key { Label = c.ToString(), Out = c.ToString(), Math = math });
+        }
+
+        static void S(List<Key> l, string chars) { S(l, chars, false); }
+
+        // Structured key: plain Unicode text normally, a linear-format template in Equation mode.
+        static void TE(List<Key> l, string label, string plain, string eq)
+        {
+            l.Add(new Key { Label = label, Out = plain, Eq = eq });
+        }
+
+        static void T(List<Key> l, string label, string output) { T(l, label, output, false); }
+
+        static void T(List<Key> l, string label, string output, bool math)
+        {
+            l.Add(new Key { Label = label, Out = output, Math = math });
         }
 
         void BuildPages()
@@ -133,24 +181,44 @@ namespace MathKeyboard
             List<Key> p = new List<Key>();
 
             // 0: calculus
+            // Keys marked TE(label, plain text, equation template): in Equation mode the template is
+            // typed so Word/PowerPoint/OneNote build a real limit / integral / sum / fraction.
             S(p, "∫ ∬ ∭ ∮ ∯ ∂ ∇ ∞ ′ ″");
-            T(p, "lim", "lim");
-            T(p, "x→∞", "x→∞");
-            T(p, "x→0", "x→0");
-            T(p, "−∞", "−∞");
-            T(p, "dx", "dx"); T(p, "dy", "dy"); T(p, "dz", "dz"); T(p, "dt", "dt");
-            T(p, "dθ", "dθ");
-            T(p, "d/dx", "d/dx"); T(p, "dy/dx", "dy/dx"); T(p, "∂/∂x", "∂/∂x");
+            TE(p, "lim", "lim", "lim ");
+            TE(p, "lim x→0", "limₓ→₀", "lim_(x→0) ");
+            TE(p, "lim x→∞", "limₓ→∞", "lim_(x→∞) ");
+            TE(p, "lim x→a", "limₓ→ₐ", "lim_(x→a) ");
+            TE(p, "∫ₐᵇ", "∫ₐᵇ", "∫_a^b ");
+            TE(p, "∑ᵢ₌₁ⁿ", "∑ᵢ₌₁ⁿ", "∑_(i=1)^n ");
+            TE(p, "∏ᵢ₌₁ⁿ", "∏ᵢ₌₁ⁿ", "∏_(i=1)^n ");
+            T(p, "dx", "dx"); T(p, "dy", "dy"); T(p, "dt", "dt");
+            TE(p, "d/dx", "d/dx", "d/dx ");
+            TE(p, "dy/dx", "dy/dx", "dy/dx ");
+            TE(p, "∂/∂x", "∂/∂x", "∂/∂x ");
+            TE(p, "∂²/∂x²", "∂²/∂x²", "∂^2/∂x^2 ");
             T(p, "f(x)", "f(x)"); T(p, "f′(x)", "f′(x)");
-            S(p, "Δ δ ε → ∑ √ ∝ ±");
+            S(p, "Δ");
+            S(p, "δ ε", true);
+            S(p, "∑ √ ∝ ±");
+            T(p, "dz", "dz"); T(p, "dθ", "dθ"); T(p, "−∞", "−∞");
+            T(p, "x→∞", "x→∞"); T(p, "x→0", "x→0");
+            S(p, "≈");
             pages.Add(p.ToArray());
 
             // 1: algebra
             p = new List<Key>();
-            S(p, "∑ ∏ ∐ √ ∛ ∜ ! ^ _ /");
-            S(p, "± ∓ × ÷ · ∘ % ° ∠ ⟂");
-            S(p, "∥ △ ⌊ ⌋ ⌈ ⌉ ‖ | ( )");
-            S(p, "[ ] { } < > x y z n");
+            S(p, "∑ ∏ √ ∛ ! ^ _ / [ ]");
+            TE(p, "√x", "√x", "√(x) ");
+            TE(p, "ⁿ√x", "ⁿ√x", "√(n&x) ");
+            TE(p, "a/b", "a/b", "a/b ");
+            TE(p, "xⁿ", "xⁿ", "x^n ");
+            TE(p, "xₙ", "xₙ", "x_n ");
+            TE(p, "|x|", "|x|", "|x|");
+            S(p, "± ∓ × ÷");
+            S(p, "· ∘ % ° ∠ ⟂");
+            S(p, "x y z n", true);
+            S(p, "a b", true);
+            S(p, "⌊ ⌋ ⌈ ⌉ { } < >");
             pages.Add(p.ToArray());
 
             // 2: greek
@@ -158,16 +226,16 @@ namespace MathKeyboard
             S(p, "α β γ δ ε ζ η θ ι κ");
             S(p, "λ μ ν ξ ο π ρ σ τ υ");
             S(p, "φ χ ψ ω ϕ ϑ ϱ ϖ ς ϵ");
-            foreach (Key k in p) k.Greek = true;
+            foreach (Key k in p) { k.Greek = true; k.Math = true; }
             pages.Add(p.ToArray());
 
             // 3: trig
             p = new List<Key>();
             foreach (string f in new[] { "sin", "cos", "tan", "cot", "sec", "csc" }) T(p, f, f + "(");
             foreach (string f in new[] { "sin", "cos", "tan" }) T(p, f + "⁻¹", f + "⁻¹(");
-            T(p, "π", "π");
+            T(p, "π", "π", true);
             foreach (string f in new[] { "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh" }) T(p, f, f + "(");
-            T(p, "θ", "θ"); T(p, "°", "°"); T(p, "rad", "rad"); T(p, "e", "e");
+            T(p, "θ", "θ", true); T(p, "°", "°"); T(p, "rad", "rad"); T(p, "e", "e");
             foreach (string f in new[] { "log", "ln", "exp", "abs" }) T(p, f, f + "(");
             T(p, "eˣ", "e^"); T(p, "√", "√"); T(p, "(", "("); T(p, ")", ")");
             pages.Add(p.ToArray());
@@ -186,6 +254,26 @@ namespace MathKeyboard
             S(p, "⁺ ⁻ ⁼ ⁽ ⁾ ⁿ ⁱ ˣ ʸ ᶻ");
             S(p, "₀ ₁ ₂ ₃ ₄ ₅ ₆ ₇ ₈ ₉");
             S(p, "₊ ₋ ₌ ₍ ₎ ₙ ₓ ᵢ ⱼ ₐ");
+            pages.Add(p.ToArray());
+
+            // 6: physics
+            p = new List<Key>();
+            S(p, "ℏ ħ ∇ ∂ ∮ ∝ ≈ ∞ ± ∓");
+            S(p, "Δ Ω");
+            S(p, "ω λ μ ν ρ σ τ ε", true);
+            S(p, "° Å ℃ ‰ · ⟨ ⟩ ⊥ ∥");
+            T(p, "a⃗", "⃗");
+            foreach (string u in new[] { "kg", "m/s", "m/s²", "N", "J", "W", "Hz", "Pa", "eV", "mol" }) T(p, u, u);
+            pages.Add(p.ToArray());
+
+            // 7: chemistry
+            p = new List<Key>();
+            S(p, "→ ⇌ ⇄ ↑ ↓ Δ");
+            foreach (string s in new[] { "(s)", "(l)", "(g)", "(aq)" }) T(p, s, s);
+            S(p, "₀ ₁ ₂ ₃ ₄ ₅ ₆ ₇ ₈ ₉");
+            S(p, "⁺ ⁻ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹");
+            foreach (string f in new[] { "H₂O", "CO₂", "O₂", "H₂", "N₂", "NH₃", "CH₄", "NaCl", "HCl", "H₂SO₄" })
+                T(p, f, f);
             pages.Add(p.ToArray());
         }
 
@@ -206,8 +294,16 @@ namespace MathKeyboard
                 keys.Add(items[i]);
             }
 
-            keys.Add(new Key { Label = "⇧ Shift", Act = Act.Shift, X = 0, Y = 5, W = 2 });
-            keys.Add(new Key { Label = "Space", Act = Act.Space, X = 2, Y = 5, W = 5, Repeat = true });
+            keys.Add(new Key { Label = char.ConvertFromUtf32(0x1D465) + " Italic", Act = Act.Italic, X = 0, Y = 5, W = 2 });
+            if (page == GreekPage)
+            {
+                keys.Add(new Key { Label = "⇧ Shift", Act = Act.Shift, X = 2, Y = 5, W = 2 });
+                keys.Add(new Key { Label = "Space", Act = Act.Space, X = 4, Y = 5, W = 3, Repeat = true });
+            }
+            else
+            {
+                keys.Add(new Key { Label = "Space", Act = Act.Space, X = 2, Y = 5, W = 5, Repeat = true });
+            }
             keys.Add(new Key { Label = "←", Act = Act.Left, X = 7, Y = 5, W = 1.5f, Repeat = true });
             keys.Add(new Key { Label = "→", Act = Act.Right, X = 8.5f, Y = 5, W = 1.5f, Repeat = true });
 
@@ -251,11 +347,26 @@ namespace MathKeyboard
 
         // ---------- behaviour ----------
 
+        string ShownText(Key k)
+        {
+            if (k.Greek && shift) return k.Label.ToUpperInvariant();
+            if (italicOn && k.Math) return MathText.Italic(k.Label);
+            return k.Label;
+        }
+
+        string Typed(Key k)
+        {
+            if (k.Greek && shift) return k.Out.ToUpperInvariant();
+            if (italicOn && k.Math) return MathText.Italic(k.Out);
+            return k.Out;
+        }
+
         void SetPage(int newPage)
         {
             if (newPage == page) return;
             animDir = newPage > page ? 1 : -1;
             page = newPage;
+            if (page != GreekPage) shift = false;   // Shift only exists on the Greek page
             animT = 0;
             Build();
         }
@@ -264,17 +375,14 @@ namespace MathKeyboard
         {
             switch (k.Act)
             {
-                case Act.Text:
-                    string s = k.Out;
-                    if (k.Greek && shift) s = s.ToUpperInvariant();
-                    Native.SendText(s);
-                    break;
+                case Act.Text: Native.SendText(Typed(k)); break;
                 case Act.Back: Native.SendVk(0x08, false); break;
                 case Act.Enter: Native.SendVk(0x0D, false); break;
                 case Act.Space: Native.SendVk(0x20, false); break;
                 case Act.Left: Native.SendVk(0x25, true); break;
                 case Act.Right: Native.SendVk(0x27, true); break;
                 case Act.Shift: shift = !shift; break;
+                case Act.Italic: italicOn = !italicOn; break;
                 case Act.Tab:
                     down = null;
                     SetPage(k.Page);
@@ -374,12 +482,12 @@ namespace MathKeyboard
 
         void Frame()
         {
-            if (WindowState == FormWindowState.Minimized) return;
+            if (WindowState == FormWindowState.Minimized || !IsHandleCreated) return;
             double now = clock.Elapsed.TotalSeconds;
             float dt = (float)Math.Min(0.1, now - lastTime);
             lastTime = now;
             Advance(dt);
-            Invalidate();
+            Present();
         }
 
         void Advance(float dt)
@@ -422,13 +530,23 @@ namespace MathKeyboard
             return f;
         }
 
-        const TextFormatFlags Flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
-            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
-
         static bool IsAscii(string s)
         {
             foreach (char c in s) if (c > 127) return false;
             return true;
+        }
+
+        static bool IsScript(char c)
+        {
+            return c == '²' || c == '³' || c == '¹' || (c >= '⁰' && c <= '₟') ||
+                c == 'ˣ' || c == 'ʸ' || c == 'ᶻ' || c == 'ᵢ' || c == 'ⱼ';
+        }
+
+        static string FamilyFor(string text)
+        {
+            foreach (char c in text)
+                if (SymbolChars.IndexOf(c) >= 0) return SymbolFont;
+            return IsAscii(text) ? UiFont : MathFont;
         }
 
         Font FitFont(Graphics g, string text, string family, int maxPx, int width)
@@ -438,23 +556,39 @@ namespace MathKeyboard
             if (fitCache.TryGetValue(id, out f)) return f;
             int px = maxPx;
             f = GetFont(family, px);
-            while (px > 9 && TextRenderer.MeasureText(g, text, f, new Size(10000, 200), Flags).Width > width - 8)
+            while (px > 9 && g.MeasureString(text, f, 10000, sfCenter).Width > width - 8)
                 f = GetFont(family, --px);
             fitCache[id] = f;
             return f;
         }
 
-        static Color Lerp(Color a, Color b, float t)
+        void DrawText(Graphics g, string text, string family, int px, Rectangle r, Color c, StringFormat sf)
         {
-            t = Math.Max(0, Math.Min(1, t));
-            return Color.FromArgb(
-                (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+            Font f = FitFont(g, text, family, px, r.Width);
+            using (Brush b = new SolidBrush(c)) g.DrawString(text, f, b, r, sf);
         }
 
         static float Clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
-        // Warm glow rising from the bottom edge. Baked into the key layer (static) and
-        // drawn again on top every frame with a flickering alpha so the keys look firelit.
+        static Color A(float alpha, int r, int g, int b)
+        {
+            return Color.FromArgb((int)Math.Max(0, Math.Min(255, alpha)), r, g, b);
+        }
+
+        static GraphicsPath RoundRect(RectangleF r, float rad)
+        {
+            GraphicsPath p = new GraphicsPath();
+            float d = Math.Max(0.1f, rad * 2);
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        // Warm glow rising from the bottom edge: baked into the cached layer, and drawn again
+        // on top every frame with a flickering alpha so the glass looks firelit.
         void DrawGlow(Graphics g, int maxAlpha)
         {
             int w = ClientSize.Width, h = ClientSize.Height;
@@ -467,12 +601,17 @@ namespace MathKeyboard
         void DrawFire(Graphics g, float t)
         {
             float flick = 0.6f + 0.4f * (float)(Math.Sin(t * 2.3) * (0.6 + 0.4 * Math.Sin(t * 6.1)));
+            Region old = g.Clip;
+            using (GraphicsPath clip = RoundRect(new RectangleF(0, 0, ClientSize.Width, ClientSize.Height), Radius))
+                g.SetClip(clip);
             DrawGlow(g, (int)(46 * Clamp01(flick)));
+            g.Clip = old;
         }
 
         void DrawEmbers(Graphics g)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
+            double now = clock.Elapsed.TotalSeconds;
             using (SolidBrush b = new SolidBrush(Color.White))
             {
                 foreach (Ember e in embers)
@@ -481,9 +620,9 @@ namespace MathKeyboard
                     float a = (float)Math.Pow(Math.Sin(Math.PI * Clamp01(age)), 0.8);
                     if (a <= 0.02f) continue;
                     Color hot = age < 0.5f
-                        ? Lerp(Color.FromArgb(255, 235, 150), Color.FromArgb(255, 110, 24), age * 2f)
-                        : Lerp(Color.FromArgb(255, 110, 24), Color.FromArgb(170, 34, 10), (age - 0.5f) * 2f);
-                    float flick = 0.8f + 0.2f * (float)Math.Sin(clock.Elapsed.TotalSeconds * 9 + e.Phase * 3);
+                        ? Mix(Color.FromArgb(255, 235, 150), Color.FromArgb(255, 110, 24), age * 2f)
+                        : Mix(Color.FromArgb(255, 110, 24), Color.FromArgb(170, 34, 10), (age - 0.5f) * 2f);
+                    float flick = 0.8f + 0.2f * (float)Math.Sin(now * 9 + e.Phase * 3);
 
                     float s = e.Size;
                     b.Color = Color.FromArgb((int)(26 * a * flick), hot);
@@ -494,15 +633,30 @@ namespace MathKeyboard
                     g.FillEllipse(b, e.X - s * 0.6f, e.Y - s * 0.6f, s * 1.2f, s * 1.2f);
                 }
             }
-            g.SmoothingMode = SmoothingMode.None;
         }
 
-        // The keys, labels and title are drawn into a cached bitmap that is only refreshed when
-        // something changes (hover, press, page animation, resize). Each frame then only blits it
-        // and draws the flickering glow and the embers on top, which keeps idle CPU use low.
-        protected override void OnPaint(PaintEventArgs e)
+        static Color Mix(Color a, Color b, float t)
         {
-            Graphics g = e.Graphics;
+            t = Clamp01(t);
+            return Color.FromArgb(
+                (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+        }
+
+        void EnsureSurface()
+        {
+            if (surface != null && surface.Width == ClientSize.Width && surface.Height == ClientSize.Height) return;
+            if (surface != null) surface.Dispose();
+            surface = new Native.Surface(ClientSize.Width, ClientSize.Height);
+            surface.G.SmoothingMode = SmoothingMode.AntiAlias;
+            surface.G.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            surface.G.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        }
+
+        // Cached layer (glass panel, keys, labels) is only rebuilt when something changes; every frame
+        // it is blitted into the window surface and the flickering glow and embers go on top.
+        void RenderFrame()
+        {
+            EnsureSurface();
             if (cache == null || cache.Width != ClientSize.Width || cache.Height != ClientSize.Height)
             {
                 if (cache != null) cache.Dispose();
@@ -514,48 +668,133 @@ namespace MathKeyboard
                 using (Graphics cg = Graphics.FromImage(cache)) RenderStatic(cg);
                 dirty = false;
             }
+
+            Graphics g = surface.G;
+            g.CompositingMode = CompositingMode.SourceCopy;
             g.DrawImageUnscaled(cache, 0, 0);
+            g.CompositingMode = CompositingMode.SourceOver;
             DrawFire(g, (float)clock.Elapsed.TotalSeconds);
             DrawEmbers(g);
         }
 
+        void Present()
+        {
+            if (!IsHandleCreated) return;
+            RenderFrame();
+            surface.Present(Handle);
+        }
+
+        // ---- liquid glass primitives ----
+
+        // state: 0 normal, 1 hover, 2 pressed, 3 active (ember)
+        void GlassKey(Graphics g, Rectangle r, float e, int state)
+        {
+            if (r.Width < 2 || r.Height < 2) return;
+            float rad = Math.Min(9 * scale, r.Height / 3f);
+            using (GraphicsPath p = RoundRect(r, rad))
+            {
+                using (Brush b = new SolidBrush(A(48 * e, 0, 0, 0))) g.FillPath(b, p);
+
+                if (state >= 2)
+                {
+                    using (LinearGradientBrush b = new LinearGradientBrush(r,
+                        A((state == 2 ? 225 : 195) * e, AccentA.R, AccentA.G, AccentA.B),
+                        A((state == 2 ? 225 : 195) * e, AccentB.R, AccentB.G, AccentB.B), 90f))
+                        g.FillPath(b, p);
+                }
+                else
+                {
+                    float a1 = state == 1 ? 70 : 44, a2 = state == 1 ? 36 : 14;
+                    using (LinearGradientBrush b = new LinearGradientBrush(r, A(a1 * e, 255, 255, 255), A(a2 * e, 255, 255, 255), 90f))
+                        g.FillPath(b, p);
+                    if (state == 1)
+                        using (Brush b = new SolidBrush(A(34 * e, 255, 140, 60))) g.FillPath(b, p);
+                }
+
+                using (LinearGradientBrush pb = new LinearGradientBrush(r, A(135 * e, 255, 255, 255), A(26 * e, 255, 255, 255), 90f))
+                using (Pen pen = new Pen(pb, 1f))
+                    g.DrawPath(pen, p);
+
+                // specular sheen along the top edge
+                float y = r.Y + 1.6f;
+                using (LinearGradientBrush sb = new LinearGradientBrush(
+                    new RectangleF(r.X + rad * 0.6f, y - 1, Math.Max(2, r.Width - rad * 1.2f), 2),
+                    A(0, 255, 255, 255), A(0, 255, 255, 255), 0f))
+                {
+                    ColorBlend cb = new ColorBlend(3);
+                    cb.Colors = new[] { A(0, 255, 255, 255), A(120 * e, 255, 255, 255), A(0, 255, 255, 255) };
+                    cb.Positions = new[] { 0f, 0.5f, 1f };
+                    sb.InterpolationColors = cb;
+                    using (Pen pen = new Pen(sb, 1f))
+                        g.DrawLine(pen, r.X + rad * 0.6f, y, r.Right - rad * 0.6f, y);
+                }
+            }
+        }
+
         void RenderStatic(Graphics g)
         {
-            g.Clear(BgColor);
+            g.Clear(Color.Transparent);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+
+            int W = ClientSize.Width, H = ClientSize.Height;
+            RectangleF panel = new RectangleF(0.5f, 0.5f, W - 1, H - 1);
+
+            using (GraphicsPath pp = RoundRect(panel, Radius))
+            {
+                // frosted tint over the blurred backdrop
+                using (LinearGradientBrush b = new LinearGradientBrush(panel, A(150, 34, 26, 24), A(122, 14, 10, 9), 90f))
+                    g.FillPath(b, pp);
+
+                g.SetClip(pp);
+                RectangleF top = new RectangleF(0, 0, W, H * 0.5f);
+                using (LinearGradientBrush b = new LinearGradientBrush(top, A(46, 255, 255, 255), A(0, 255, 255, 255), 90f))
+                    g.FillRectangle(b, top);
+                DrawGlow(g, 70);
+                g.ResetClip();
+
+                // glass rim: bright top-left, warm bottom-right
+                using (LinearGradientBrush rb = new LinearGradientBrush(panel, Color.White, Color.White, 55f))
+                {
+                    ColorBlend cb = new ColorBlend(4);
+                    cb.Colors = new[] { A(210, 255, 255, 255), A(40, 255, 255, 255), A(36, 255, 210, 170), A(170, 255, 130, 50) };
+                    cb.Positions = new[] { 0f, 0.4f, 0.65f, 1f };
+                    rb.InterpolationColors = cb;
+                    using (Pen pen = new Pen(rb, Math.Max(1.2f, 1.5f * scale)))
+                        g.DrawPath(pen, pp);
+                }
+            }
 
             // title bar
             int ih = (int)(20 * scale);
-            Rectangle title = new Rectangle(0, 0, ClientSize.Width, TitleH);
-            using (Brush b = new SolidBrush(TitleColor)) g.FillRectangle(b, title);
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(titleLogo, new Rectangle(Pad, (TitleH - ih) / 2, ih, ih));
-            TextRenderer.DrawText(g, "Mathematical Keyboard", GetFont(UiFont, (int)(13 * scale)),
-                new Rectangle(Pad + ih + 6, 0, ClientSize.Width / 2, TitleH), Color.Silver,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            if (hoverTitle == 1) using (Brush b = new SolidBrush(HoverColor)) g.FillRectangle(b, MinRect);
-            if (hoverTitle == 2) using (Brush b = new SolidBrush(Color.FromArgb(0xC4, 0x2B, 0x1C))) g.FillRectangle(b, CloseRect);
-            TextRenderer.DrawText(g, "—", GetFont(UiFont, (int)(13 * scale)), MinRect, Color.Silver, Flags);
-            TextRenderer.DrawText(g, "✕", GetFont("Segoe UI Symbol", (int)(12 * scale)), CloseRect, Color.Silver, Flags);
-
-            DrawGlow(g, 64);
+            g.DrawImage(titleLogo, new Rectangle(Pad + 2, (TitleH - ih) / 2, ih, ih));
+            DrawText(g, "Mathematical Keyboard", UiFont, (int)(13 * scale),
+                new Rectangle(Pad + ih + 8, 0, ClientSize.Width / 2, TitleH), A(215, 238, 232, 226), sfLeft);
+            if (hoverTitle == 1) using (GraphicsPath p = RoundRect(Rectangle.Inflate(MinRect, -3, -4), 7 * scale))
+                using (Brush b = new SolidBrush(A(70, 255, 255, 255))) g.FillPath(b, p);
+            if (hoverTitle == 2) using (GraphicsPath p = RoundRect(Rectangle.Inflate(CloseRect, -3, -4), 7 * scale))
+                using (Brush b = new SolidBrush(A(215, 215, 50, 30))) g.FillPath(b, p);
+            DrawText(g, "—", UiFont, (int)(13 * scale), MinRect, A(225, 235, 230, 225), sfCenter);
+            DrawText(g, "✕", SymbolFont, (int)(12 * scale), CloseRect, A(225, 235, 230, 225), sfCenter);
+            using (Pen pen = new Pen(A(26, 255, 255, 255)))
+                g.DrawLine(pen, Pad, TitleH, W - Pad, TitleH);
 
             float ux = UnitX, uy = UnitY;
 
-            // pass 1: key backgrounds
+            // pass 1: key glass
             foreach (Key k in keys)
             {
                 Rectangle r = KeyRect(k);
                 r.Inflate(-Gap, -Gap);
-                float anim = 1f;
-                r.X += (int)AnimOffset(k, ux, out anim);
+                float e;
+                r.X += (int)AnimOffset(k, ux, out e);
 
-                Color fill = KeyColor;
-                if (k.Act == Act.Shift && shift) fill = AccentA;
-                else if (k == down) fill = PressColor;
-                else if (k == hover) fill = HoverColor;
-
-                using (Brush b = new SolidBrush(Color.FromArgb((int)(236 * anim), fill)))
-                    g.FillRectangle(b, r);
+                int state = 0;
+                if ((k.Act == Act.Shift && shift) || (k.Act == Act.Italic && italicOn)) state = 3;
+                else if (k == down) state = 2;
+                else if (k == hover) state = 1;
+                GlassKey(g, r, e, state);
             }
 
             // animated tab highlight
@@ -563,41 +802,25 @@ namespace MathKeyboard
             Rectangle hr = new Rectangle(
                 (int)Math.Round(Pad + hlX * ux) + Gap, TitleH + Pad + Gap,
                 (int)Math.Round(tw * ux) - 2 * Gap, (int)Math.Round(uy) - 2 * Gap);
-            using (LinearGradientBrush b = new LinearGradientBrush(hr, AccentA, AccentB, 0f))
-                g.FillRectangle(b, hr);
+            GlassKey(g, hr, 1f, 3);
 
             // pass 2: labels
             foreach (Key k in keys)
             {
                 Rectangle r = KeyRect(k);
                 r.Inflate(-Gap, -Gap);
-                float anim = 1f;
-                r.X += (int)AnimOffset(k, ux, out anim);
+                float e;
+                r.X += (int)AnimOffset(k, ux, out e);
 
-                string text = k.Label;
-                if (k.Greek && shift) text = text.ToUpperInvariant();
-
-                bool isText = k.Act != Act.Text || text.Length > 1;
+                string text = ShownText(k);
+                bool isText = k.Act != Act.Text || (text.Length > 1 && !char.IsHighSurrogate(text[0]));
                 bool big = k.Act == Act.Back || k.Act == Act.Enter || k.Act == Act.Left || k.Act == Act.Right;
                 int px = (int)(uy * (isText && !big ? 0.34f : 0.46f));
-                if (page == 5 && k.Act == Act.Text) px = (int)(px * 1.6f);   // superscript glyphs are tiny
+                if (k.Act == Act.Text && text.Length == 1 && IsScript(text[0])) px = (int)(px * 1.55f);   // tiny script glyphs
+                else if (k.Act == Act.Text && text.Length == 2 && char.IsHighSurrogate(text[0])) px = (int)(px * 1.2f);   // math italic
 
-                string family = IsAscii(text) ? UiFont : MathFont;
-                if (text == "⌫") family = "Segoe UI Symbol";
-
-                Color under = (k.Act == Act.Tab && k.Page == page) ? AccentA : KeyColor;
-                Color col = Lerp(under, TextColor, anim);
-                TextRenderer.DrawText(g, text, FitFont(g, text, family, px, r.Width), r, col, Flags);
+                DrawText(g, text, FamilyFor(text), px, r, A(255 * e, TextColor.R, TextColor.G, TextColor.B), sfCenter);
             }
-
-            using (Pen p = new Pen(Color.FromArgb(0x6A, 0x3A, 0x22)))
-                g.DrawRectangle(p, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
-
-            // resize grip
-            using (Brush b = new SolidBrush(Color.FromArgb(0x88, 0x66, 0x55)))
-                for (int i = 0; i < 3; i++)
-                    for (int j = 0; j <= i; j++)
-                        g.FillRectangle(b, ClientSize.Width - 4 - 4 * j, ClientSize.Height - 4 - 4 * (2 - i), 2, 2);
         }
 
         // Page change: symbol keys slide in from the travel direction with a staggered fade.
@@ -617,12 +840,25 @@ namespace MathKeyboard
 
         // ---------- test helpers ----------
 
-        public void Snapshot(string path)
+        // Renders one frame over a test backdrop (the real window blurs whatever is behind it).
+        public void Snapshot(string path, string backdrop)
         {
-            IntPtr h = Handle;
-            using (Bitmap bmp = new Bitmap(ClientSize.Width, ClientSize.Height))
+            RenderFrame();
+            int w = surface.Width, h = surface.Height;
+            using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+            using (Graphics g = Graphics.FromImage(bmp))
             {
-                DrawToBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
+                if (backdrop == "light") g.Clear(Color.FromArgb(235, 238, 242));
+                else if (backdrop == "dark") g.Clear(Color.FromArgb(20, 22, 30));
+                else
+                {
+                    using (LinearGradientBrush b = new LinearGradientBrush(new Rectangle(0, 0, w, h),
+                        Color.FromArgb(40, 120, 220), Color.FromArgb(230, 70, 140), 20f))
+                        g.FillRectangle(b, 0, 0, w, h);
+                    using (Brush b = new SolidBrush(Color.FromArgb(240, 240, 240)))
+                        for (int x = 0; x < w; x += 90) g.FillRectangle(b, x, 0, 28, h);
+                }
+                g.DrawImage(surface.Bmp, 0, 0);
                 bmp.Save(path, ImageFormat.Png);
             }
         }
@@ -645,6 +881,13 @@ namespace MathKeyboard
         [STAThread]
         static void Main(string[] args)
         {
+            AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs ev)
+            {
+                System.IO.File.WriteAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mathkeyboard-error.txt"),
+                    ev.ExceptionObject.ToString());
+                Environment.Exit(1);
+            };
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
             Native.SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -658,13 +901,20 @@ namespace MathKeyboard
                 return;
             }
 
-            // --snap <png> [page] [shift|-] [animSeconds]  : render to an image and exit
+            // --snap <png> [page] [shift|-] [animSeconds] [color|light|dark]  : render to an image and exit
             if (args.Length >= 2 && args[0] == "--snap")
             {
-                KeyboardForm f = new KeyboardForm();
-                f.SetState(args.Length > 2 ? int.Parse(args[2]) : 0, args.Length > 3 && args[3] == "shift",
-                    args.Length > 4 ? float.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture) : 9f);
-                f.Snapshot(args[1]);
+                try
+                {
+                    KeyboardForm f = new KeyboardForm();
+                    f.SetState(args.Length > 2 ? int.Parse(args[2]) : 0, args.Length > 3 && args[3] == "shift",
+                        args.Length > 4 ? float.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture) : 9f);
+                    f.Snapshot(args[1], args.Length > 5 ? args[5] : "color");
+                }
+                catch (Exception ex)
+                {
+                    System.IO.File.WriteAllText(args[1] + ".err", ex.ToString());
+                }
                 return;
             }
 
@@ -680,3 +930,4 @@ namespace MathKeyboard
         }
     }
 }
+
