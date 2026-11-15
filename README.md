@@ -50,6 +50,12 @@ Typing `∫`, `∑`, `π`, `ℏ` or `H₂O` on a normal keyboard means memorisin
   </tr>
 </table>
 
+## Download
+
+Get **MathKeyboard-v1.0.0-win.zip** from the [Releases page](https://github.com/mohammedtaleb-dev/mathematical-keyboard/releases), unzip it and run MathKeyboard.exe.
+
+The app is not code-signed, so Windows SmartScreen may show *Windows protected your PC*: click **More info -> Run anyway**. Prefer not to run a downloaded binary? Build it yourself (next section); all the source is in src/.
+
 ## Getting started
 
 **Requirements:** Windows 10 (built and tested on 10.0.19045). The .NET Framework 4 that is already part of Windows is all you need.
