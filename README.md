@@ -8,8 +8,6 @@
 
 Click a key and the symbol is typed into whatever app you are using, such as Word, Notepad or a browser. No installation and no dependencies; it builds with the compiler that already ships with Windows.
 
-[العربية](README.ar.md)
-
 </div>
 
 ![Calculus page](docs/screenshots/calculus.png)
